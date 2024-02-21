@@ -1,27 +1,331 @@
-from flask import Flask, jsonify, request
+from flask import Flask, request, jsonify, send_file
 from flask_sqlalchemy import SQLAlchemy
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, get_jwt , decode_token
+from werkzeug.security import generate_password_hash, check_password_hash  # Importar check_password_hash
+from werkzeug.utils import secure_filename
+from datetime import timedelta
+from flask_cors import CORS
+from werkzeug.datastructures import FileStorage
+import os
+import uuid
+from PIL import Image
+import io
+import base64
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = "postgresql://postgres:admin@localhost:5433/dispositivos"
+CORS(app)
+app.config['SECRET_KEY'] = 'dispositivos1225555..+'
+app.config['SQLALCHEMY_DATABASE_URI'] = "postgresql://postgres:admin@localhost:5432/dispositivos"
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['JWT_SECRET_KEY'] = 'gffdgrebgbynngnn,,,yhdf'
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(minutes=200)
 db = SQLAlchemy(app)
+jwt = JWTManager(app)
 
+UPLOAD_FOLDER = 'C:\\Users\\edgar\\OneDrive\\Documentos\\GitHub\\Projecto_Dispositivos\\images\\perfil'
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+class Usuario(db.Model):
+    __tablename__ = 'usuarios'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    nombre = db.Column(db.String, index=True)
+    apellido = db.Column(db.String)
+    cedula = db.Column(db.String)
+    correo = db.Column(db.String, unique=True, index=True)
+    telefono = db.Column(db.String)
+    contraseña = db.Column(db.String)
+    rol_id = db.Column(db.Integer, db.ForeignKey('roles.id'))
+    imagen = db.Column(db.String)
+
+class UsuarioGusto(db.Model):
+    __tablename__ = 'usuario_gusto'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    usuario_id = db.Column(db.Integer, db.ForeignKey('usuarios.id'))
+    gusto_id = db.Column(db.Integer, db.ForeignKey('gustos.id'))
+
+    def __init__(self, usuario_id, gusto_id):
+        self.usuario_id = usuario_id
+        self.gusto_id = gusto_id
+
+def get_unique_filename(filename):
+    # Generar un UUID único
+    unique_identifier = str(uuid.uuid4())
+    # Obtener la extensión del archivo
+    extension = os.path.splitext(filename)[1]
+    # Concatenar el UUID y la extensión para crear un nombre de archivo único
+    unique_filename = unique_identifier + extension
+    return unique_filename
+
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    correo_usuario = data.get('correo')
+    contraseña = data.get('contraseña')
+
+    # Validar si los datos de inicio de sesión están presentes
+    if not correo_usuario or not contraseña:
+        return jsonify({"message": "Correo o contraseña faltantes"}), 400
+
+    # Verificar si el correo electrónico es válido
+    if not correo_usuario:
+        return jsonify({"message": "Correo electrónico inválido"}), 400
+
+    # Verificar si la contraseña es válida
+    if not contraseña:
+        return jsonify({"message": "Contraseña inválida"}), 400
+
+    # Intentar encontrar al usuario en la base de datos
+    usuario = Usuario.query.filter_by(correo=correo_usuario).first()  
+
+    # Validar si se encontró al usuario
+    if not usuario:
+        return jsonify({"message": "Usuario no encontrado"}), 404
+
+    # Validar si la contraseña ingresada coincide con la contraseña almacenada (hash)
+    if not check_password_hash(usuario.contraseña, contraseña):
+        return jsonify({"message": "Contraseña incorrecta"}), 401
+
+    # Generar el token de acceso
+    access_token = create_access_token(identity=usuario.id)
+
+    # Obtener el ID del usuario
+    usuario_id = usuario.id
+
+    # Verificar si el usuario tiene gustos completados
+    gustos_completados = UsuarioGusto.query.filter_by(usuario_id=usuario.id).count() > 0
+
+    # Devolver la respuesta con el valor de gustos_completados y el ID del usuario
+    return jsonify({
+        "message": "Inicio de sesión exitoso",
+        "access_token": access_token,
+        "user_id": usuario_id,
+        "gustos_completados": gustos_completados
+    }), 200
+
+@app.route('/register', methods=['POST'])
+def register():
+    try:
+        data = request.form
+        nombre = data.get('nombre')
+        apellido = data.get('apellido')
+        correo = data.get('correo')
+        telefono = data.get('telefono')
+        password = data.get('password') 
+        cedula = data.get('cedula')
+
+        print('Datos del formulario:')
+        print('Nombre:', nombre)
+        print('Apellido:', apellido)
+        print('Correo:', correo)
+        print('Teléfono:', telefono)
+        print('Contraseña:', password)
+        print('Cedula:', cedula)
+
+        if 'imagen' not in request.files:
+            return jsonify({"message": "No se proporcionó una imagen"}), 400
+
+        imagen = request.files['imagen']
+
+        # Verificar si se proporcionó un archivo
+        if imagen.filename == '':
+            return jsonify({"message": "No se seleccionó ningún archivo"}), 400
+
+        # Imprimir el nombre del archivo de la imagen
+        print('Nombre del archivo de la imagen:', imagen.filename)
+
+        # Verificar si el archivo es una imagen permitida
+        if not allowed_file(imagen.filename):
+            return jsonify({"message": "Tipo de archivo no permitido"}), 400
+
+        # Generar un nombre de archivo único
+        unique_filename = get_unique_filename(imagen.filename)
+
+        # Guardar la imagen en el sistema de archivos con el nombre único
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+        imagen.save(filepath)
+
+        print('Filepath:', filepath)  # Agrega este mensaje para verificar el filepath
+        print('llego hasta aqui')
+        
+        hashed_password = generate_password_hash(password)  # Cambiado de 'contraseña' a 'password'
+        print(hashed_password)
+        print('Intentando guardar en la base de datos...')  # Agrega este mensaje para verificar el proceso de guardado
+
+        # Guardar la ruta de la imagen en la base de datos
+        nuevo_usuario = Usuario(nombre=nombre, apellido=apellido, correo=correo,
+                        telefono=telefono, contraseña=hashed_password, imagen=filepath)
+        db.session.add(nuevo_usuario)
+        try:
+            db.session.commit()
+            print('Usuario guardado exitosamente en la base de datos.')
+        except Exception as e:
+            db.session.rollback()
+            print('Error al guardar en la base de datos:', str(e))
+            return jsonify({"message": "Error al crear el usuario", "error": str(e)}), 500
+
+        return jsonify({"message": "Usuario creado exitosamente"}), 201
+    except Exception as e:
+        # En caso de error, deshacer la transacción y devolver un mensaje de error
+        db.session.rollback()
+        return jsonify({"message": "Error al crear el usuario", "error": str(e)}), 500
+
+
+
+@app.route('/subir-imagen', methods=['POST'])
+def subir_imagen():
+    print(request.files)
+    if 'imagen' not in request.files:
+        return jsonify({'error': 'No se encontró la imagen en la solicitud'}), 400
+
+    imagen_file = request.files['imagen']
+    print(imagen_file)
+    if isinstance(imagen_file, FileStorage):
+        imagen_bytes = imagen_file.read()
+        try:
+        # Intenta abrir los datos de la imagen con PIL
+            imagen = Image.open(io.BytesIO(imagen_bytes))
+            imagen.show()
+        except Exception as e:
+            print(f"Error al abrir los datos de la imagen: {e}")
+
+        try:
+            with open(os.path.join(app.config['UPLOAD_FOLDER'], 'test.txt'), 'w') as f:
+                f.write('test')
+            print('El directorio es accesible')
+        except Exception as e:
+            print(f'Error al acceder al directorio: {e}')
+
+
+        try:
+            # Guardar la imagen en el servidor
+            nombre_archivo = 'perfil_usuario.jpg'  # Nombre de archivo predefinido o genera un nombre único
+            with open(os.path.join(app.config['UPLOAD_FOLDER'], nombre_archivo), 'wb') as f:
+                f.write(imagen_bytes)
+
+            return jsonify({'mensaje': 'Imagen recibida correctamente'}), 200
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    else:
+        return jsonify({'error': 'La imagen recibida no es válida'}), 400
+
+
+@app.route('/check-email', methods=['POST'])
+def check_email_availability():
+    data = request.get_json()
+    correo = data.get('correo')
+
+    # Verificar si el correo electrónico ya está en uso en la base de datos
+    usuario_existente = Usuario.query.filter_by(correo=correo).first()
+
+    if usuario_existente:
+        return jsonify({'message': 'El correo electrónico ya está en uso'}), 200
+
+    return jsonify({'message': 'El correo electrónico está disponible'}), 200
+
+@app.route('/user_id')
+@jwt_required()
+def get_user_id():
+    # Obtener el ID del usuario desde el token JWT
+    user_id = get_jwt_identity()
+    
+    # Devolver el ID del usuario en formato JSON
+    return jsonify({"id": user_id}), 200
+
+@app.route('/profile')
+@jwt_required()
+def profile():
+    # Obtener el ID del usuario desde el token JWT
+    user_id = get_jwt_identity()
+    
+    # Consultar la información del usuario utilizando su ID
+    usuario = Usuario.query.get(user_id)
+    
+    if usuario:
+        # Construir la ruta completa de la imagen de perfil
+        imagen_path = usuario.imagen if usuario.imagen else None
+        
+        # Si hay una imagen, leerla como datos binarios y convertirla a base64
+        imagen_base64 = None
+        if imagen_path:
+            with open(imagen_path, 'rb') as file:
+                imagen_data = file.read()
+                imagen_base64 = base64.b64encode(imagen_data).decode('utf-8')
+        
+        # Devolver los datos del usuario y la imagen en formato JSON
+        data = {
+            "id": usuario.id,
+            "nombre": usuario.nombre,
+            "apellido": usuario.apellido,
+            "cedula": usuario.cedula,
+            "correo": usuario.correo,
+            "telefono": usuario.telefono,
+            "imagen_base64": imagen_base64
+        }
+        
+        return jsonify(data), 200
+    else:
+        return jsonify({"message": "Usuario no encontrado"}), 404
+
+@app.route('/guardar-gustos', methods=['POST'])
+def guardar_gustos():
+    try:
+        # Obtener los datos del cuerpo de la solicitud
+        data = request.get_json()
+        usuario_id = data.get('usuario_id')
+        gustos_seleccionados = data.get('gustos')
+
+        # Verificar si se proporcionó el ID del usuario
+        if not usuario_id:
+            return jsonify({"message": "No se proporcionó el ID de usuario"}), 400
+
+        # Verificar si se proporcionaron gustos
+        if not gustos_seleccionados:
+            return jsonify({"message": "No se proporcionaron gustos"}), 400
+
+        # Iterar sobre los gustos seleccionados y guardar la relación en la tabla UsuarioGusto
+        for gusto_id in gustos_seleccionados:
+            # Crear una instancia de UsuarioGusto con el usuario_id y el gusto_id
+            nueva_relacion = UsuarioGusto(usuario_id=usuario_id, gusto_id=gusto_id)
+            db.session.add(nueva_relacion)
+
+        # Confirmar la transacción
+        db.session.commit()
+
+        return jsonify({"message": "Gustos guardados exitosamente"}), 200
+    except Exception as e:
+        # En caso de error, deshacer la transacción y devolver un mensaje de error
+        db.session.rollback()
+        return jsonify({"message": "Error al guardar los gustos", "error": str(e)}), 500
+
+
+# Ruta para cerrar sesión y revocar el token JWT
+@app.route('/logout', methods=['DELETE'])
+@jwt_required()
+def logout():
+    # Obtener el token JWT
+    jwt_token = get_jwt()  # Cambiado aquí
+
+    # Agregar el token a la lista de tokens revocados
+    # De esta manera, el token ya no será válido para futuras solicitudes
+    jwt.revoked_token_store.add(jwt_token['jti'])
+    
+    return jsonify({"message": "Sesión cerrada exitosamente"}), 200
+
+    
 class Role(db.Model):
     __tablename__ = 'roles'
 
     id = db.Column(db.Integer, primary_key=True, index=True)
     nombre = db.Column(db.String(20))
 
-class Usuario(db.Model):
-    __tablename__ = 'usuarios'
-
-    id = db.Column(db.Integer, primary_key=True, index=True)
-    nombre = db.Column(db.String, index=True)
-    apellido = db.Column(db.String)
-    cedula = db.Column(db.String)
-    correo = db.Column(db.String, unique=True, index=True)
-    telefono = db.Column(db.String)
-    rol_id = db.Column(db.Integer, db.ForeignKey('roles.id'))
 
 class Evento(db.Model):
     __tablename__ = 'eventos'
@@ -149,6 +453,19 @@ def read_evento(evento_id):
         return jsonify(evento_dict)
     return jsonify({"message": "Evento no encontrado"}), 404
 
+from datetime import datetime
+
+@app.route('/eventos/futuros', methods=['GET'])
+def read_all_eventos_futuros():
+    # Obtener la fecha actual
+    fecha_actual = datetime.now().date()
+    # Filtrar los eventos futuros
+    eventos_futuros = Evento.query.filter(Evento.fecha >= fecha_actual).all()
+    eventos_list = [{"id": evento.id, "nombre": evento.nombre, "fecha": evento.fecha,
+                     "descripcion": evento.descripcion, "foto": evento.foto, "lugar": evento.lugar} for evento in eventos_futuros]
+    return jsonify(eventos_list)
+
+
 @app.route('/eventos/<int:evento_id>', methods=['PUT'])
 def update_evento(evento_id):
     evento = Evento.query.get(evento_id)
@@ -186,7 +503,6 @@ class Gusto(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     nombre = db.Column(db.String(100), nullable=False)
     descripcion = db.Column(db.Text)
-
 
 @app.route('/gustos', methods=['POST'])
 def create_gusto():
@@ -501,4 +817,5 @@ def delete_servicio(servicio_id):
 
 
 if __name__ == '__main__':
+    app.run(host='0.0.0.0', port="5001")
     app.run(debug=True)
