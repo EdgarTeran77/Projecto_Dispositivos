@@ -6,16 +6,27 @@ from werkzeug.utils import secure_filename
 from datetime import timedelta
 from flask_cors import CORS
 from werkzeug.datastructures import FileStorage
-import os
-import uuid
+import os, io, base64, uuid
 from PIL import Image
-import io
-import base64
+from dotenv import load_dotenv
+
+
 
 app = Flask(__name__)
 CORS(app)
+
+# Carga las variables de entorno desde el archivo .env
+load_dotenv()
+
+# Ahora puedes acceder a las variables de entorno como si fueran variables regulares de Python
+DB_HOST = os.getenv("DB_HOST")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_DATABASE = os.getenv("DB_DATABASE")
+DB_PORT = os.getenv("DB_PORT")
+
 app.config['SECRET_KEY'] = 'dispositivos1225555..+'
-app.config['SQLALCHEMY_DATABASE_URI'] = "postgresql://postgres:admin@localhost:5432/dispositivos"
+app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://' + DB_USER + ':' + DB_PASSWORD + '@' + DB_HOST + ':' + DB_PORT + '/' + DB_DATABASE
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JWT_SECRET_KEY'] = 'gffdgrebgbynngnn,,,yhdf'
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(minutes=200)

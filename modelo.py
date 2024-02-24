@@ -1,23 +1,52 @@
-from sqlalchemy import create_engine, Column, String
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, Date, Text, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, relationship
+import numpy as np
 from transformers import DistilBertTokenizer, DistilBertModel
 import torch
-import numpy as np
+from dotenv import load_dotenv
+import os
+
+# Carga las variables de entorno desde el archivo .env
+load_dotenv()
+
+# Ahora puedes acceder a las variables de entorno como si fueran variables regulares de Python
+DB_HOST = os.getenv("DB_HOST")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_DATABASE = os.getenv("DB_DATABASE")
+DB_PORT = os.getenv("DB_PORT")
+
 
 Base = declarative_base()
 
 # Definir una tabla para los eventos
 class Event(Base):
-    __tablename__ = 'events'
-    id = Column(String, primary_key=True)
-    description = Column(String)
+    __tablename__ = 'eventos'
+    id = Column(Integer, primary_key=True)
+    nombre = Column(String(100))
+    fecha = Column(Date)
+    descripcion = Column(Text)
+    foto = Column(String(255))
+    lugar = Column(String(100))
+    aprobado = Column(Boolean)
 
 # Definir una tabla para los gustos de los usuarios
 class UserPreferences(Base):
-    __tablename__ = 'user_preferences'
-    id = Column(String, primary_key=True)
-    preferences = Column(String)
+    __tablename__ = 'usuario_gusto'
+    id = Column(Integer, primary_key=True)
+    usuario_id = Column(Integer, ForeignKey('usuarios.id'))
+    gusto_id = Column(Integer, ForeignKey('gustos.id'))
+
+    gusto = relationship("Gusto", back_populates="usuarios")
+
+class Gusto(Base):
+    __tablename__ = 'gustos'
+    id = Column(Integer, primary_key=True)
+    nombre = Column(String(50))
+    descripcion = Column(String(255))
+
+    usuarios = relationship("UserPreferences", back_populates="gusto")
 
 class EventRecommender:
     def __init__(self, db_params):
@@ -36,23 +65,25 @@ class EventRecommender:
     def get_user_preferences(self, user_id):
         try:
             session = self.Session()
-            user = session.query(UserPreferences).filter_by(id=user_id).first()
+            user_preferences = session.query(UserPreferences).filter_by(usuario_id=user_id).all()
+            for up in user_preferences:
+                up.gusto  # Cargar explícitamente la relación gusto
             session.close()
-            if user:
-                return user.preferences
+            if user_preferences:
+                return [up.gusto.descripcion for up in user_preferences]
             else:
                 print("No se encontraron gustos para el usuario.")
                 return None
         except Exception as e:
             print("Error al obtener los gustos del usuario:", e)
             return None
-
+    
     def get_all_events(self):
         try:
             session = self.Session()
             events = session.query(Event).all()
             session.close()
-            return {event.id: event.description for event in events}
+            return {str(event.id): event.descripcion for event in events}
         except Exception as e:
             print("Error al obtener los detalles de los eventos:", e)
             return {}
@@ -69,35 +100,39 @@ class EventRecommender:
         return np.dot(vector1, vector2.T) / (np.linalg.norm(vector1) * np.linalg.norm(vector2))
 
     def recommend_events_for_user(self, user_id, num_recommendations=5):
-        # Paso 1: Obtener los gustos del usuario
         user_preferences = self.get_user_preferences(user_id)
+        
         if user_preferences is None:
             return []
 
-        # Paso 2: Recuperar los detalles de todos los eventos disponibles
         all_events = self.get_all_events()
+        user_event_embeddings = self.get_embedding(" ".join(user_preferences))
 
-        # Paso 3: Procesar los datos utilizando DistilBERT para obtener representaciones vectoriales
-        user_embedding = self.get_embedding(user_preferences)
-        event_embeddings = {event_id: self.get_embedding(event_description) for event_id, event_description in all_events.items()}
+        event_similarities = {}
+        for event_id, event_description in all_events.items():
+            event_embedding = self.get_embedding(event_description)
+            similarity = self.cosine_similarity(user_event_embeddings, event_embedding)
+            event_similarities[event_id] = similarity
 
-        # Paso 4: Calcular la similitud del coseno entre los gustos del usuario y los detalles de cada evento
-        event_similarities = {event_id: self.cosine_similarity(user_embedding, event_embedding) for event_id, event_embedding in event_embeddings.items()}
-
-        # Paso 5: Ordenar los eventos por similitud
         sorted_events = sorted(event_similarities.items(), key=lambda x: x[1], reverse=True)
-
-        # Paso 6: Seleccionar los eventos recomendados
         recommended_events = [event_id for event_id, _ in sorted_events[:num_recommendations]]
-
+       
         return recommended_events
+         
 
-# Ejemplo de uso
+
 if __name__ == "__main__":
-    db_params = 'postgresql://usuario:contraseña@localhost:puerto/nombre_de_base_de_datos'
+    db_params = 'postgresql://' + DB_USER + ':' + DB_PASSWORD + '@' + DB_HOST + ':' + DB_PORT + '/' + DB_DATABASE
     event_recommender = EventRecommender(db_params)
     event_recommender.connect_to_database()
 
-    user_id = "123"
+    user_id = 1  # ID del usuario para el que deseas obtener las recomendaciones
+    user_preferences = event_recommender.get_user_preferences(user_id)
+    
+    if user_preferences:
+        print("Gustos del usuario:", user_preferences)
+    else:
+        print("No se encontraron gustos para el usuario.")
+
     recommended_events = event_recommender.recommend_events_for_user(user_id)
     print("Eventos recomendados para el usuario:", recommended_events)
