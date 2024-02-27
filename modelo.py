@@ -6,6 +6,8 @@ from transformers import DistilBertTokenizer, DistilBertModel
 import torch
 from dotenv import load_dotenv
 import os
+from sqlalchemy import or_
+
 
 # Carga las variables de entorno desde el archivo .env
 load_dotenv()
@@ -99,9 +101,11 @@ class EventRecommender:
     def cosine_similarity(self, vector1, vector2):
         return np.dot(vector1, vector2.T) / (np.linalg.norm(vector1) * np.linalg.norm(vector2))
 
+
+    # Dentro de la clase EventRecommender
     def recommend_events_for_user(self, user_id, num_recommendations=5):
         user_preferences = self.get_user_preferences(user_id)
-        
+    
         if user_preferences is None:
             return []
 
@@ -115,24 +119,8 @@ class EventRecommender:
             event_similarities[event_id] = similarity
 
         sorted_events = sorted(event_similarities.items(), key=lambda x: x[1], reverse=True)
-        recommended_events = [event_id for event_id, _ in sorted_events[:num_recommendations]]
-       
-        return recommended_events
+        recommended_event_ids = [int(event_id) for event_id, _ in sorted_events[:num_recommendations]]
+        print(recommended_event_ids)
+   
+        return recommended_event_ids
          
-
-
-if __name__ == "__main__":
-    db_params = 'postgresql://' + DB_USER + ':' + DB_PASSWORD + '@' + DB_HOST + ':' + DB_PORT + '/' + DB_DATABASE
-    event_recommender = EventRecommender(db_params)
-    event_recommender.connect_to_database()
-
-    user_id = 1  # ID del usuario para el que deseas obtener las recomendaciones
-    user_preferences = event_recommender.get_user_preferences(user_id)
-    
-    if user_preferences:
-        print("Gustos del usuario:", user_preferences)
-    else:
-        print("No se encontraron gustos para el usuario.")
-
-    recommended_events = event_recommender.recommend_events_for_user(user_id)
-    print("Eventos recomendados para el usuario:", recommended_events)

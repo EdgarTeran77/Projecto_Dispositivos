@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, send_file
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import or_
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, get_jwt , decode_token
 from werkzeug.security import generate_password_hash, check_password_hash  # Importar check_password_hash
 from werkzeug.utils import secure_filename
@@ -9,6 +10,8 @@ from werkzeug.datastructures import FileStorage
 import os, io, base64, uuid
 from PIL import Image
 from dotenv import load_dotenv
+from modelo import  EventRecommender
+from datetime import datetime,timezone
 
 
 
@@ -112,7 +115,7 @@ def login():
 
     # Verificar si el usuario tiene gustos completados
     gustos_completados = UsuarioGusto.query.filter_by(usuario_id=usuario.id).count() > 0
-
+    print (access_token)
     # Devolver la respuesta con el valor de gustos_completados y el ID del usuario
     return jsonify({
         "message": "Inicio de sesión exitoso",
@@ -144,7 +147,7 @@ def register():
             return jsonify({"message": "No se proporcionó una imagen"}), 400
 
         imagen = request.files['imagen']
-
+        print(imagen)
         # Verificar si se proporcionó un archivo
         if imagen.filename == '':
             return jsonify({"message": "No se seleccionó ningún archivo"}), 400
@@ -424,23 +427,45 @@ def delete_user(user_id):
 
 @app.route('/eventos', methods=['POST'])
 def create_evento():
-    data = request.get_json()
-    evento = Evento(**data)
-    db.session.add(evento)
-    db.session.commit()
+    try:
+        data = request.form
+        print("Datos recibidos del frontend:", data)
+        evento = Evento(
+            nombre=data.get('nombre'),
+            fecha=data.get('fecha'),
+            descripcion=data.get('descripcion'),
+            lugar=data.get('lugar')
+        )
+        db.session.add(evento)
+        db.session.commit()
+
+        # Guardar la ruta de la imagen si se proporciona
+        if 'imagen' in request.files:
+            imagen = request.files['imagen']
+            if imagen.filename != '':
+                # Generar un nombre de archivo único
+                unique_filename = get_unique_filename(imagen.filename)
+                filepath = os.path.join(UPLOAD_FOLDER, unique_filename)
+                # Guardar la imagen en la carpeta especificada
+                imagen.save(filepath)
+                # Actualizar el campo de foto en el evento con la ruta de la imagen
+                evento.foto = filepath
+                db.session.commit()
+
+        evento_dict = {
+            "id": evento.id,
+            "nombre": evento.nombre,
+            "fecha": evento.fecha,
+            "descripcion": evento.descripcion,
+            "foto": evento.foto,  # Devolver la ruta de la imagen en la respuesta JSON
+            "lugar": evento.lugar
+        }
+
+        return jsonify(evento_dict), 201
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"message": "Error al crear el evento", "error": str(e)}), 500
     
-    # Excluir el objeto no serializable al devolver la respuesta
-    evento_dict = {
-        "id": evento.id,
-        "nombre": evento.nombre,
-        "fecha": evento.fecha,
-        "descripcion": evento.descripcion,
-        "foto": evento.foto,
-        "lugar": evento.lugar
-        # Puedes agregar más campos según sea necesario
-    }
-    
-    return jsonify(evento_dict)
 
 @app.route('/eventos', methods=['GET'])
 def read_all_eventos():
@@ -464,18 +489,54 @@ def read_evento(evento_id):
         return jsonify(evento_dict)
     return jsonify({"message": "Evento no encontrado"}), 404
 
-from datetime import datetime
-
 @app.route('/eventos/futuros', methods=['GET'])
 def read_all_eventos_futuros():
-    # Obtener la fecha actual
-    fecha_actual = datetime.now().date()
-    # Filtrar los eventos futuros
-    eventos_futuros = Evento.query.filter(Evento.fecha >= fecha_actual).all()
-    eventos_list = [{"id": evento.id, "nombre": evento.nombre, "fecha": evento.fecha,
-                     "descripcion": evento.descripcion, "foto": evento.foto, "lugar": evento.lugar} for evento in eventos_futuros]
-    return jsonify(eventos_list)
-
+    try:
+        # Obtener la fecha actual
+        fecha_actual = datetime.now().date()
+        print("Fecha actual:", fecha_actual)  # Imprimir la fecha actual
+        
+        # Filtrar los eventos futuros
+        eventos_futuros = Evento.query.filter(Evento.fecha >= fecha_actual).all()
+        
+        eventos_list = []
+        for evento in eventos_futuros:
+            # Verificar si el evento tiene la columna 'foto'
+            if hasattr(evento, 'foto'):
+                # Obtener la ruta de la imagen del evento
+                imagen_path = evento.foto if evento.foto else None
+                print("Ruta de la imagen:", imagen_path)  # Imprimir la ruta de la imagen
+                
+                # Verificar si la ruta de la imagen existe
+                if imagen_path and os.path.exists(imagen_path):
+                    # Si hay una imagen y la ruta existe, leerla como datos binarios y convertirla a base64
+                    with open(imagen_path, 'rb') as file:
+                        imagen_data = file.read()
+                        imagen_base64 = base64.b64encode(imagen_data).decode('utf-8')
+                else:
+                    # Si la ruta de la imagen no existe, asignar None a imagen_base64
+                    imagen_base64 = None
+            else:
+                # Si el evento no tiene la columna 'foto', asignar None a imagen_base64
+                imagen_base64 = None
+            
+            # Crear un diccionario con los datos del evento, incluida la imagen en base64
+            evento_data = {
+                "id": evento.id,
+                "nombre": evento.nombre,
+                "fecha": evento.fecha,
+                "descripcion": evento.descripcion,
+                "foto_base64": imagen_base64,  # Agregar la imagen en base64
+                "lugar": evento.lugar
+            }
+            eventos_list.append(evento_data)
+        
+        print("Eventos obtenidos:", eventos_list)  # Imprimir los eventos obtenidos
+        return jsonify(eventos_list), 200
+    
+    except Exception as e:
+        print("Error al obtener eventos futuros:", str(e))  # Imprimir el error en caso de excepción
+        return jsonify({"message": "Error al obtener eventos futuros", "error": str(e)}), 500
 
 @app.route('/eventos/<int:evento_id>', methods=['PUT'])
 def update_evento(evento_id):
@@ -722,55 +783,98 @@ class Notificacion(db.Model):
     __tablename__ = 'notificaciones'
 
     id = db.Column(db.Integer, primary_key=True)
-    titulo = db.Column(db.String(100), nullable=False)
-    contenido = db.Column(db.Text)
-    fecha = db.Column(db.DateTime, nullable=False)
+    usuario_id = db.Column(db.Integer, db.ForeignKey('usuarios.id'), nullable=False)
+    mensaje = db.Column(db.Text)
+    leida = db.Column(db.Boolean, default=False)
+    fecha = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
-# Rutas para el CRUD de notificaciones
+    # Relación con la tabla de usuarios
+    usuario = db.relationship('Usuario', backref=db.backref('notificaciones', lazy=True))
+
+    def __repr__(self):
+        return f"<Notificacion {self.id}>"
+
+# Rutas CRUD para Notificacion
+@app.route('/notificaciones', methods=['GET'])
+@jwt_required()
+def get_notificaciones():
+    current_user_id = get_jwt_identity()
+    notificaciones = Notificacion.query.filter_by(usuario_id=current_user_id).all()
+    output = []
+    for notificacion in notificaciones:
+        output.append({
+            'id': notificacion.id,
+            'usuario_id': notificacion.usuario_id,
+            'mensaje': notificacion.mensaje,
+            'leida': notificacion.leida,
+            'fecha': notificacion.fecha,
+        })
+    return jsonify({'notificaciones': output})
+
+@app.route('/notificaciones/<id>', methods=['GET'])
+def get_notificacion(id):
+    notificacion = Notificacion.query.get_or_404(id)
+    return jsonify({
+        'id': notificacion.id,
+        'usuario_id': notificacion.usuario_id,
+        'mensaje': notificacion.mensaje,
+        'leida': notificacion.leida,
+        'fecha': notificacion.fecha,
+    })
 
 @app.route('/notificaciones', methods=['POST'])
+@jwt_required()  # Requiere que el usuario esté autenticado con un token JWT válido
 def create_notificacion():
-    data = request.get_json()
-    notificacion = Notificacion(**data)
-    db.session.add(notificacion)
-    db.session.commit()
-    return jsonify({"message": "Notificación creada exitosamente"}), 201
+    try:
+        # Obtiene el ID de usuario del token JWT
+        current_user_id = get_jwt_identity()
 
-@app.route('/notificaciones', methods=['GET'])
-def read_all_notificaciones():
-    notificaciones = Notificacion.query.all()
-    notificaciones_list = [{"id": notificacion.id, "titulo": notificacion.titulo, "contenido": notificacion.contenido, "fecha": notificacion.fecha} for notificacion in notificaciones]
-    return jsonify(notificaciones_list)
-
-@app.route('/notificaciones/<int:notificacion_id>', methods=['GET'])
-def read_notificacion(notificacion_id):
-    notificacion = Notificacion.query.get(notificacion_id)
-    if notificacion:
-        notificacion_dict = {"id": notificacion.id, "titulo": notificacion.titulo, "contenido": notificacion.contenido, "fecha": notificacion.fecha}
-        return jsonify(notificacion_dict)
-    return jsonify({"message": "Notificación no encontrada"}), 404
-
-@app.route('/notificaciones/<int:notificacion_id>', methods=['PUT'])
-def update_notificacion(notificacion_id):
-    notificacion = Notificacion.query.get(notificacion_id)
-    if notificacion:
+        # Obtiene los datos de la solicitud
         data = request.get_json()
-        notificacion.titulo = data.get('titulo', notificacion.titulo)
-        notificacion.contenido = data.get('contenido', notificacion.contenido)
-        notificacion.fecha = data.get('fecha', notificacion.fecha)
-        db.session.commit()
-        return jsonify({"message": "Notificación actualizada exitosamente"}), 200
-    return jsonify({"message": "Notificación no encontrada"}), 404
 
-@app.route('/notificaciones/<int:notificacion_id>', methods=['DELETE'])
-def delete_notificacion(notificacion_id):
-    notificacion = Notificacion.query.get(notificacion_id)
-    if notificacion:
-        db.session.delete(notificacion)
-        db.session.commit()
-        return jsonify({"message": "Notificación eliminada exitosamente"}), 200
-    return jsonify({"message": "Notificación no encontrada"}), 404
+        app.logger.debug("Datos recibidos para la notificación: %s", data)  # Agregar print para depuración
 
+        # Verificar si los datos recibidos contienen todos los campos necesarios
+        if 'mensaje' not in data:
+            raise ValueError("El campo 'mensaje' es requerido")
+
+        # Crear una nueva notificación asociada al usuario actual
+        nueva_notificacion = Notificacion(
+            usuario_id=current_user_id,
+            mensaje=data.get('mensaje'),
+            leida=data.get('leida', False),
+            fecha = datetime.now(timezone.utc)
+        )
+
+        app.logger.debug("Notificación creada: %s", nueva_notificacion.__dict__)  # Agregar print para depuración
+
+        # Guardar la nueva notificación en la base de datos
+        db.session.add(nueva_notificacion)
+        db.session.commit()
+
+        return jsonify({'message': 'Notificación creada exitosamente'}), 201
+    except Exception as e:
+        app.logger.error("Error al crear la notificación: %s", str(e))  # Agregar print para depuración
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/notificaciones/<id>', methods=['PUT'])
+def update_notificacion(id):
+    notificacion = Notificacion.query.get_or_404(id)
+    data = request.get_json()
+    notificacion.usuario_id = data['usuario_id']
+    notificacion.mensaje = data['mensaje']
+    notificacion.leida = data.get('leida', notificacion.leida)
+    notificacion.otro_atributo = data.get('otro_atributo', notificacion.otro_atributo)
+    db.session.commit()
+    return jsonify({'message': 'Notificacion actualizada exitosamente'})
+
+@app.route('/notificaciones/<id>', methods=['DELETE'])
+def delete_notificacion(id):
+    notificacion = Notificacion.query.get_or_404(id)
+    db.session.delete(notificacion)
+    db.session.commit()
+    return jsonify({'message': 'Notificacion eliminada exitosamente'})
 
 class Servicio(db.Model):
     __tablename__ = 'servicios'
@@ -826,6 +930,26 @@ def delete_servicio(servicio_id):
     return jsonify({"message": "Servicio no encontrado"}), 404
 
 
+@app.route('/recommend-events/')
+@jwt_required()
+def recommend_events():
+    try:
+        user_id = get_jwt_identity()
+        print(user_id)
+        db_params = 'postgresql://' + DB_USER + ':' + DB_PASSWORD + '@' + DB_HOST + ':' + DB_PORT + '/' + DB_DATABASE
+        event_recommender = EventRecommender(db_params)
+        event_recommender.connect_to_database()
+        recommended_events_ids = event_recommender.recommend_events_for_user(user_id)
+        # Dentro de tu método donde quieres filtrar los eventos futuros por los IDs recomendados
+        eventos_recomendados = Evento.query.filter(Evento.id.in_(recommended_events_ids)).all()
+        eventos_list = [{"id": evento.id, "nombre": evento.nombre, "fecha": evento.fecha,
+                 "descripcion": evento.descripcion, "foto": evento.foto, "lugar": evento.lugar} for evento in eventos_recomendados]
+        
+        # Devolver los eventos recomendados en formato JSON
+        return jsonify({"recommended_events": eventos_list}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port="5001")
